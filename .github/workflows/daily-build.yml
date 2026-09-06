@@ -20,7 +20,7 @@ jobs:
 
     steps:
       - name: Check out aggregate repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -61,6 +61,7 @@ jobs:
             & robocopy $source $destination /MIR /XD '.git' /R:2 /W:2 /NFL /NDL /NJH /NJS /NP
             if ($LASTEXITCODE -ge 8) { throw "Failed to sync $($repository.Name); robocopy exit code $LASTEXITCODE." }
           }
+          exit 0
 
       - name: Commit synchronized source
         shell: pwsh
