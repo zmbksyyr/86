@@ -19,6 +19,11 @@ jobs:
     timeout-minutes: 90
 
     steps:
+      - name: Check out aggregate repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - name: Set build timestamp
         shell: pwsh
         run: |
@@ -27,10 +32,12 @@ jobs:
           "BUILD_TIMESTAMP=$($buildTime.ToString('yyyy-MM-dd-HHmmss'))" |
             Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - name: Clone upstream repositories
+      - name: Clone and sync upstream repositories
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          $cloneRoot = Join-Path $env:RUNNER_TEMP 'upstream'
+          New-Item -ItemType Directory -Force -Path $cloneRoot | Out-Null
           $repositories = @(
             @{ Name = '86JP'; Url = 'https://gitgud.io/rewio/86JP.git' },
             @{ Name = '86JPGMTool'; Url = 'https://gitgud.io/rewio/86JPGMTool.git' },
@@ -41,14 +48,37 @@ jobs:
           )
 
           foreach ($repository in $repositories) {
+            $source = Join-Path $cloneRoot $repository.Name
             $destination = Join-Path $env:GITHUB_WORKSPACE $repository.Name
             for ($attempt = 1; $attempt -le 3; $attempt++) {
-              & git clone --depth 1 $repository.Url $destination
+              & git clone --depth 1 $repository.Url $source
               if ($LASTEXITCODE -eq 0) { break }
               if ($attempt -eq 3) { throw "Failed to clone $($repository.Name) after 3 attempts." }
-              if (Test-Path $destination) { Remove-Item $destination -Recurse -Force }
+              if (Test-Path $source) { Remove-Item $source -Recurse -Force }
               Start-Sleep -Seconds (5 * $attempt)
             }
+
+            & robocopy $source $destination /MIR /XD '.git' /R:2 /W:2 /NFL /NDL /NJH /NJS /NP
+            if ($LASTEXITCODE -ge 8) { throw "Failed to sync $($repository.Name); robocopy exit code $LASTEXITCODE." }
+          }
+
+      - name: Commit synchronized source
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $projects = @('86JP', '86JPGMTool', 'S4A12ClientPatch', 'ServerS4A21', 'S4A21ClientPatch', 'S4A21GmTool')
+          & git config user.name 'github-actions[bot]'
+          & git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          & git add --force -- $projects
+          $changes = @(& git diff --cached --name-only)
+          if ($LASTEXITCODE -ne 0) { throw 'Failed to inspect synchronized source changes.' }
+          if ($changes.Count -eq 0) {
+            Write-Host 'Upstream source is already current.'
+          } else {
+            & git commit -m "Sync upstream source $env:BUILD_TIMESTAMP"
+            if ($LASTEXITCODE -ne 0) { throw 'Failed to commit synchronized source.' }
+            & git push origin HEAD:main
+            if ($LASTEXITCODE -ne 0) { throw 'Failed to push synchronized source to main.' }
           }
 
       - name: Set up .NET SDK
@@ -124,20 +154,46 @@ jobs:
             Compress-Archive -Path (Join-Path $source '*') -DestinationPath $archive -CompressionLevel Optimal -Force
           }
 
+      - name: Move fixed release tag
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & git tag --force daily-build HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'Failed to update local daily-build tag.' }
+          & git push origin refs/tags/daily-build --force
+          if ($LASTEXITCODE -ne 0) { throw 'Failed to update remote daily-build tag.' }
+
       - name: Remove old release assets
         env:
           GH_TOKEN: ${{ github.token }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          & gh release view daily-build --repo $env:GITHUB_REPOSITORY 2>$null | Out-Null
-          if ($LASTEXITCODE -eq 0) {
-            $assets = & gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/daily-build" --jq '.assets[].name'
-            if ($LASTEXITCODE -ne 0) { throw 'Failed to query existing release assets.' }
-            foreach ($asset in $assets) {
-              & gh release delete-asset daily-build $asset --repo $env:GITHUB_REPOSITORY --yes
-              if ($LASTEXITCODE -ne 0) { throw "Failed to delete old release asset: $asset" }
+          $headers = @{
+            Authorization = "Bearer $env:GH_TOKEN"
+            Accept = 'application/vnd.github+json'
+            'X-GitHub-Api-Version' = '2022-11-28'
+          }
+          $apiRoot = "https://api.github.com/repos/$env:GITHUB_REPOSITORY"
+
+          $releases = Invoke-RestMethod -Headers $headers -Uri "$apiRoot/releases?per_page=100"
+          foreach ($legacyRelease in @($releases | Where-Object { $_.tag_name -like 'build-*' })) {
+            Invoke-RestMethod -Method Delete -Headers $headers -Uri "$apiRoot/releases/$($legacyRelease.id)"
+            $encodedTag = [Uri]::EscapeDataString([string]$legacyRelease.tag_name)
+            try {
+              Invoke-RestMethod -Method Delete -Headers $headers -Uri "$apiRoot/git/refs/tags/$encodedTag"
+            } catch {
+              if ([int]$_.Exception.Response.StatusCode -ne 404) { throw }
             }
+          }
+
+          try {
+            $release = Invoke-RestMethod -Headers $headers -Uri "$apiRoot/releases/tags/daily-build"
+            foreach ($asset in @($release.assets)) {
+              Invoke-RestMethod -Method Delete -Headers $headers -Uri "$apiRoot/releases/assets/$($asset.id)"
+            }
+          } catch {
+            if ([int]$_.Exception.Response.StatusCode -ne 404) { throw }
           }
 
       - name: Update fixed GitHub release
