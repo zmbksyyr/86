@@ -105,6 +105,7 @@ jobs:
               '--self-contained', 'true',
               "-p:PublishSingleFile=$($SingleFile.ToString().ToLowerInvariant())",
               '-p:IncludeNativeLibrariesForSelfExtract=true',
+              '-p:CetCompat=false',
               '-o', $Output,
               '-nr:false', '-m:1'
             )
