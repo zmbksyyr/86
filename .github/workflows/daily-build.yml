@@ -1,0 +1,132 @@
+name: Daily build
+
+on:
+  schedule:
+    # 06:00 Asia/Shanghai is 22:00 UTC on the previous day.
+    - cron: '0 22 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: daily-build
+  cancel-in-progress: false
+
+jobs:
+  build-and-release:
+    runs-on: windows-2022
+    timeout-minutes: 90
+
+    steps:
+      - name: Set build date
+        shell: pwsh
+        run: |
+          $chinaTimeZone = [TimeZoneInfo]::FindSystemTimeZoneById('China Standard Time')
+          $buildDate = [TimeZoneInfo]::ConvertTimeFromUtc([DateTime]::UtcNow, $chinaTimeZone).ToString('yyyy-MM-dd')
+          "BUILD_DATE=$buildDate" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Clone upstream repositories
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path sources | Out-Null
+          $repositories = @(
+            @{ Name = '86JP'; Url = 'https://gitgud.io/rewio/86JP.git' },
+            @{ Name = '86JPGMTool'; Url = 'https://gitgud.io/rewio/86JPGMTool.git' },
+            @{ Name = 'S4A12ClientPatch'; Url = 'https://gitgud.io/rewio/S4A12ClientPatch.git' },
+            @{ Name = 'ServerS4A21'; Url = 'https://gitgud.io/rewio/ServerS4A21.git' },
+            @{ Name = 'S4A21ClientPatch'; Url = 'https://gitgud.io/rewio/S4A21ClientPatch.git' },
+            @{ Name = 'S4A21GmTool'; Url = 'https://gitgud.io/rewio/S4A21GmTool.git' }
+          )
+
+          foreach ($repository in $repositories) {
+            $destination = Join-Path 'sources' $repository.Name
+            for ($attempt = 1; $attempt -le 3; $attempt++) {
+              & git clone --depth 1 $repository.Url $destination
+              if ($LASTEXITCODE -eq 0) { break }
+              if ($attempt -eq 3) { throw "Failed to clone $($repository.Name) after 3 attempts." }
+              if (Test-Path $destination) { Remove-Item $destination -Recurse -Force }
+              Start-Sleep -Seconds (5 * $attempt)
+            }
+          }
+
+      - name: Set up .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Set up MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Publish .NET applications
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          function Publish-App([string]$Project, [string]$Output, [bool]$SingleFile) {
+            $Output = [IO.Path]::GetFullPath($Output)
+            New-Item -ItemType Directory -Force -Path $Output | Out-Null
+            $arguments = @(
+              'publish', $Project,
+              '-c', 'Release',
+              '-r', 'win-x64',
+              '--self-contained', 'true',
+              "-p:PublishSingleFile=$($SingleFile.ToString().ToLowerInvariant())",
+              '-p:IncludeNativeLibrariesForSelfExtract=true',
+              '-o', $Output,
+              '-nr:false', '-m:1'
+            )
+            & dotnet @arguments
+            if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed: $Project" }
+          }
+
+          Publish-App 'sources/86JP/Server/DfoServer/DfoServer.csproj' 'release/86JP/DfoServer' $true
+          Publish-App 'sources/86JP/Tool/PvfProxy/PvfProxy.csproj' 'release/86JP/PvfProxy' $true
+          Publish-App 'sources/86JPGMTool/DfoGmTool.csproj' 'release/86JPGMTool' $false
+          Publish-App 'sources/ServerS4A21/Server/DfoServer/DfoServer.csproj' 'release/ServerS4A21/DfoServer' $true
+          Publish-App 'sources/ServerS4A21/Tool/PvfProxy/PvfProxy.csproj' 'release/ServerS4A21/PvfProxy' $true
+          Publish-App 'sources/S4A21GmTool/DfoGmTool.csproj' 'release/S4A21GmTool' $false
+
+      - name: Build C++ client patches
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          function Build-Cpp([string]$Project, [string]$Platform, [string]$Output) {
+            $Output = [IO.Path]::GetFullPath($Output)
+            New-Item -ItemType Directory -Force -Path $Output | Out-Null
+            & msbuild $Project /m /nologo /t:Rebuild /p:Configuration=Release /p:Platform=$Platform "/p:OutDir=$Output\"
+            if ($LASTEXITCODE -ne 0) { throw "MSBuild failed: $Project" }
+          }
+
+          Build-Cpp 'sources/86JP/Patch/86JP.vcxproj' 'Win32' 'release/86JP/ClientPatch'
+          Build-Cpp 'sources/S4A12ClientPatch/86JP/86JP.sln' 'x86' 'release/S4A12ClientPatch/86JP'
+          Build-Cpp 'sources/S4A12ClientPatch/GameGaurd/GameGaurd.sln' 'x86' 'release/S4A12ClientPatch/GameGaurd'
+          Build-Cpp 'sources/S4A12ClientPatch/PreventMinimize/PreventMinimize.sln' 'x86' 'release/S4A12ClientPatch/PreventMinimize'
+          Build-Cpp 'sources/S4A21ClientPatch/ClientPatch.sln' 'x86' 'release/S4A21ClientPatch'
+
+          Copy-Item 'sources/S4A12ClientPatch/GameGaurd/GameGaurd.ini' 'release/S4A12ClientPatch/GameGaurd/' -Force
+          Get-ChildItem 'sources/S4A21ClientPatch' -Recurse -File -Filter '*.ini' |
+            Copy-Item -Destination 'release/S4A21ClientPatch/' -Force
+
+      - name: Create dated archive
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $archive = Join-Path $env:GITHUB_WORKSPACE "$env:BUILD_DATE.zip"
+          Compress-Archive -Path 'release/*' -DestinationPath $archive -CompressionLevel Optimal -Force
+          "ARCHIVE_PATH=$archive" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ env.BUILD_DATE }}
+          name: ${{ env.BUILD_DATE }}
+          body: |
+            Automated daily build from the latest upstream source.
+            Target framework and dependencies: upstream project defaults
+            Runtime: Windows x64
+          files: ${{ env.ARCHIVE_PATH }}
+          make_latest: true
+          overwrite_files: true
