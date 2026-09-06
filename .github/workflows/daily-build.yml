@@ -19,18 +19,18 @@ jobs:
     timeout-minutes: 90
 
     steps:
-      - name: Set build date
+      - name: Set build timestamp
         shell: pwsh
         run: |
           $chinaTimeZone = [TimeZoneInfo]::FindSystemTimeZoneById('China Standard Time')
-          $buildDate = [TimeZoneInfo]::ConvertTimeFromUtc([DateTime]::UtcNow, $chinaTimeZone).ToString('yyyy-MM-dd')
-          "BUILD_DATE=$buildDate" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $buildTime = [TimeZoneInfo]::ConvertTimeFromUtc([DateTime]::UtcNow, $chinaTimeZone)
+          "BUILD_TIMESTAMP=$($buildTime.ToString('yyyy-MM-dd-HHmmss'))" |
+            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Clone upstream repositories
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          New-Item -ItemType Directory -Force -Path sources | Out-Null
           $repositories = @(
             @{ Name = '86JP'; Url = 'https://gitgud.io/rewio/86JP.git' },
             @{ Name = '86JPGMTool'; Url = 'https://gitgud.io/rewio/86JPGMTool.git' },
@@ -41,7 +41,7 @@ jobs:
           )
 
           foreach ($repository in $repositories) {
-            $destination = Join-Path 'sources' $repository.Name
+            $destination = Join-Path $env:GITHUB_WORKSPACE $repository.Name
             for ($attempt = 1; $attempt -le 3; $attempt++) {
               & git clone --depth 1 $repository.Url $destination
               if ($LASTEXITCODE -eq 0) { break }
@@ -81,12 +81,12 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed: $Project" }
           }
 
-          Publish-App 'sources/86JP/Server/DfoServer/DfoServer.csproj' 'release/86JP/DfoServer' $true
-          Publish-App 'sources/86JP/Tool/PvfProxy/PvfProxy.csproj' 'release/86JP/PvfProxy' $true
-          Publish-App 'sources/86JPGMTool/DfoGmTool.csproj' 'release/86JPGMTool' $false
-          Publish-App 'sources/ServerS4A21/Server/DfoServer/DfoServer.csproj' 'release/ServerS4A21/DfoServer' $true
-          Publish-App 'sources/ServerS4A21/Tool/PvfProxy/PvfProxy.csproj' 'release/ServerS4A21/PvfProxy' $true
-          Publish-App 'sources/S4A21GmTool/DfoGmTool.csproj' 'release/S4A21GmTool' $false
+          Publish-App '86JP/Server/DfoServer/DfoServer.csproj' 'release/86JP/DfoServer' $true
+          Publish-App '86JP/Tool/PvfProxy/PvfProxy.csproj' 'release/86JP/PvfProxy' $true
+          Publish-App '86JPGMTool/DfoGmTool.csproj' 'release/86JPGMTool' $false
+          Publish-App 'ServerS4A21/Server/DfoServer/DfoServer.csproj' 'release/ServerS4A21/DfoServer' $true
+          Publish-App 'ServerS4A21/Tool/PvfProxy/PvfProxy.csproj' 'release/ServerS4A21/PvfProxy' $true
+          Publish-App 'S4A21GmTool/DfoGmTool.csproj' 'release/S4A21GmTool' $false
 
       - name: Build C++ client patches
         shell: pwsh
@@ -100,33 +100,55 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "MSBuild failed: $Project" }
           }
 
-          Build-Cpp 'sources/86JP/Patch/86JP.vcxproj' 'Win32' 'release/86JP/ClientPatch'
-          Build-Cpp 'sources/S4A12ClientPatch/86JP/86JP.sln' 'x86' 'release/S4A12ClientPatch/86JP'
-          Build-Cpp 'sources/S4A12ClientPatch/GameGaurd/GameGaurd.sln' 'x86' 'release/S4A12ClientPatch/GameGaurd'
-          Build-Cpp 'sources/S4A12ClientPatch/PreventMinimize/PreventMinimize.sln' 'x86' 'release/S4A12ClientPatch/PreventMinimize'
-          Build-Cpp 'sources/S4A21ClientPatch/ClientPatch.sln' 'x86' 'release/S4A21ClientPatch'
+          Build-Cpp '86JP/Patch/86JP.vcxproj' 'Win32' 'release/86JP/ClientPatch'
+          Build-Cpp 'S4A12ClientPatch/86JP/86JP.sln' 'x86' 'release/S4A12ClientPatch/86JP'
+          Build-Cpp 'S4A12ClientPatch/GameGaurd/GameGaurd.sln' 'x86' 'release/S4A12ClientPatch/GameGaurd'
+          Build-Cpp 'S4A12ClientPatch/PreventMinimize/PreventMinimize.sln' 'x86' 'release/S4A12ClientPatch/PreventMinimize'
+          Build-Cpp 'S4A21ClientPatch/ClientPatch.sln' 'x86' 'release/S4A21ClientPatch'
 
-          Copy-Item 'sources/S4A12ClientPatch/GameGaurd/GameGaurd.ini' 'release/S4A12ClientPatch/GameGaurd/' -Force
-          Get-ChildItem 'sources/S4A21ClientPatch' -Recurse -File -Filter '*.ini' |
+          Copy-Item 'S4A12ClientPatch/GameGaurd/GameGaurd.ini' 'release/S4A12ClientPatch/GameGaurd/' -Force
+          Get-ChildItem 'S4A21ClientPatch' -Recurse -File -Filter '*.ini' |
             Copy-Item -Destination 'release/S4A21ClientPatch/' -Force
 
-      - name: Create dated archive
+      - name: Create separate dated archives
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $archive = Join-Path $env:GITHUB_WORKSPACE "$env:BUILD_DATE.zip"
-          Compress-Archive -Path 'release/*' -DestinationPath $archive -CompressionLevel Optimal -Force
-          "ARCHIVE_PATH=$archive" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $archiveRoot = Join-Path $env:GITHUB_WORKSPACE 'archives'
+          New-Item -ItemType Directory -Force -Path $archiveRoot | Out-Null
+          $projects = @('86JP', '86JPGMTool', 'S4A12ClientPatch', 'ServerS4A21', 'S4A21ClientPatch', 'S4A21GmTool')
+          foreach ($project in $projects) {
+            $source = Join-Path $env:GITHUB_WORKSPACE "release/$project"
+            if (-not (Test-Path $source)) { throw "Release directory not found: $source" }
+            $archive = Join-Path $archiveRoot "$project-$env:BUILD_TIMESTAMP.zip"
+            Compress-Archive -Path (Join-Path $source '*') -DestinationPath $archive -CompressionLevel Optimal -Force
+          }
 
-      - name: Publish GitHub release
+      - name: Remove old release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & gh release view daily-build --repo $env:GITHUB_REPOSITORY 2>$null | Out-Null
+          if ($LASTEXITCODE -eq 0) {
+            $assets = & gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/daily-build" --jq '.assets[].name'
+            if ($LASTEXITCODE -ne 0) { throw 'Failed to query existing release assets.' }
+            foreach ($asset in $assets) {
+              & gh release delete-asset daily-build $asset --repo $env:GITHUB_REPOSITORY --yes
+              if ($LASTEXITCODE -ne 0) { throw "Failed to delete old release asset: $asset" }
+            }
+          }
+
+      - name: Update fixed GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: build-${{ env.BUILD_DATE }}
-          name: ${{ env.BUILD_DATE }}
+          tag_name: daily-build
+          name: Daily build
           body: |
             Automated daily build from the latest upstream source.
             Target framework and dependencies: upstream project defaults
             Runtime: Windows x64
-          files: ${{ env.ARCHIVE_PATH }}
+          files: archives/*.zip
           make_latest: true
           overwrite_files: true
