@@ -56,6 +56,7 @@ namespace DfoServer.Network
         private readonly EventDailyAttendanceAnytimeHandler
             _eventDailyAttendanceAnytimeHandler;
         private readonly EventTotalAttendanceHandler _eventTotalAttendanceHandler;
+        private readonly NpcFavorHandler _npcFavorHandler;
         private readonly ExpertJobStoreHandler _expertJobStoreHandler;
         private readonly ExpertJobExtractionHandler _expertJobExtractionHandler;
         private readonly ExpertJobCompoundHandler _expertJobCompoundHandler;
@@ -218,6 +219,7 @@ namespace DfoServer.Network
             _eventDailyAttendanceAnytimeHandler =
                 featureHandlers.EventDailyAttendanceAnytime;
             _eventTotalAttendanceHandler = featureHandlers.EventTotalAttendance;
+            _npcFavorHandler = featureHandlers.NpcFavor;
             _pvpChannelInfoHandler = socialHandlers.PvpChannelInfo;
             _pvpRoomHandler = socialHandlers.PvpRoom;
             _characterSessionLifecycle = characterSessionLifecycle;
@@ -280,6 +282,7 @@ namespace DfoServer.Network
                     d[(ushort)command] = _socialHandlers.GuildManagement.Handle;
             });
             _cmdDispatch.RegisterGroup("event-joust", RegisterEventJoustHandlers);
+            _cmdDispatch.RegisterGroup("npc-favor", _npcFavorHandler.RegisterHandlers);
         }
 
         public void Dispose()
@@ -526,6 +529,8 @@ namespace DfoServer.Network
             d[0x0197] = _inventoryHandler.Handle_REGENERATION_RANDOM_OPTION;       //407 equipment compound
             d[(ushort)CmdPacketTypeA21.TITLE_BOOK_PUT] = _inventoryHandler.Handle_TITLE_BOOK;
             d[0x01B6] = _inventoryHandler.Handle_CHANGE_RANDOM_OPTION;             //438
+            d[(ushort)CmdPacketTypeA21.RESET_RANDOM_OPTION] =
+                _inventoryHandler.Handle_RESET_RANDOM_OPTION;                    //456 魔法封印装备品级调整箱
             d[(ushort)CmdPacketTypeA21.TITLE_BOOK_GET] = _inventoryHandler.Handle_TITLE_BOOK;
             d[0x019E] = _inventoryHandler.Handle_ENUM_CMDPACKET_MONSTERCARD_BIND;  //414 monster card synthesis
             d[0x025C] = _inventoryHandler.Handle_UPGRADE_CARD;                     //604 monster card upgrade
