@@ -1628,3 +1628,45 @@ WHEN NEW.delete_flag <> 0 AND EXISTS (
 BEGIN
     SELECT RAISE(ABORT, 'leave guild before deleting character');
 END;
+
+CREATE TABLE IF NOT EXISTS guild_dungeon_progress (
+    guild_id INTEGER NOT NULL REFERENCES guilds(guild_id) ON DELETE CASCADE,
+    period_start INTEGER NOT NULL,
+    style_id INTEGER NOT NULL,
+    dungeon_id INTEGER NOT NULL,
+    clear_count INTEGER NOT NULL CHECK(clear_count >= 0),
+    PRIMARY KEY(guild_id, period_start, style_id, dungeon_id)
+);
+CREATE TABLE IF NOT EXISTS guild_dungeon_clears (
+    event_id TEXT NOT NULL,
+    character_id INTEGER NOT NULL REFERENCES characters(character_id) ON DELETE CASCADE,
+    guild_id INTEGER NOT NULL REFERENCES guilds(guild_id) ON DELETE CASCADE,
+    period_start INTEGER NOT NULL,
+    dungeon_id INTEGER NOT NULL,
+    mail_id INTEGER NOT NULL,
+    clear_count INTEGER NOT NULL,
+    PRIMARY KEY(event_id, character_id)
+);
+
+CREATE TABLE IF NOT EXISTS guild_contents (
+    guild_id INTEGER NOT NULL REFERENCES guilds(guild_id) ON DELETE CASCADE,
+    content_type INTEGER NOT NULL,
+    content_id INTEGER NOT NULL,
+    content_value INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL CHECK(expires_at >= 0),
+    PRIMARY KEY(guild_id, content_type)
+);
+
+-- 角色改名历史。changed_at 为 Unix 秒；old_name 保留 180 天用于防止旧名被抢注，
+-- 同角色两次改名间隔 90 天。写入与改名事务同批提交（CharacterRenameCommitService）。
+CREATE TABLE IF NOT EXISTS character_rename_history (
+    character_id INTEGER NOT NULL,
+    changed_at INTEGER NOT NULL,
+    old_name BLOB NOT NULL,
+    new_name BLOB NOT NULL,
+    source_item INTEGER NOT NULL,
+    PRIMARY KEY(character_id, changed_at),
+    FOREIGN KEY(character_id) REFERENCES characters(character_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_character_rename_old_name
+    ON character_rename_history(old_name, changed_at);
